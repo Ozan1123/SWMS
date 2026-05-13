@@ -972,98 +972,11 @@ function initializeDashboard() {
     cards.forEach((card, index) => {
         card.style.animationDelay = `${index * 0.1}s`;
     });
-
-    // Initialize dashboard charts
-    if (document.getElementById('stockChart')) {
-        ChartManager.createChart('stockChart', {
-            type: 'line',
-            data: {
-                labels: ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'],
-                datasets: [{
-                    label: 'Stok Masuk',
-                    data: [12, 19, 15, 25, 22, 18, 14],
-                    borderColor: '#10B981',
-                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                    tension: 0.4,
-                    fill: true
-                }, {
-                    label: 'Stok Keluar',
-                    data: [8, 15, 12, 20, 18, 16, 10],
-                    borderColor: '#DC2626',
-                    backgroundColor: 'rgba(220, 38, 38, 0.1)',
-                    tension: 0.4,
-                    fill: true
-                }]
-            },
-            options: {}
-        });
-    }
+    // Chart is handled by DashboardStatsManager which fetches live data
 }
 
 function initializeAnalytics() {
-    // Sales Chart
-    ChartManager.createChart('salesChart', {
-        type: 'line',
-        data: {
-            labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-            datasets: [{
-                label: 'Penjualan',
-                data: [120, 150, 180, 200, 250, 280, 320, 350, 380, 420, 450, 480],
-                borderColor: '#10B981',
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                tension: 0.4,
-                fill: true,
-                pointBackgroundColor: '#10B981',
-                pointBorderColor: '#FFFFFF',
-                pointBorderWidth: 2
-            }]
-        },
-        options: {}
-    });
-
-    // Category Chart
-    ChartManager.createChart('categoryChart', {
-        type: 'doughnut',
-        data: {
-            labels: ['Audio', 'Ban', 'Velg', 'Aksesoris', 'Lainnya'],
-            datasets: [{
-                data: [35, 25, 20, 15, 5],
-                backgroundColor: [
-                    '#10B981',
-                    '#3B82F6',
-                    '#F59E0B',
-                    '#8B5CF6',
-                    '#EF4444'
-                ],
-                borderWidth: 0
-            }]
-        },
-        options: {
-            cutout: '60%'
-        }
-    });
-
-    // Stock Flow Chart
-    ChartManager.createChart('stockFlowChart', {
-        type: 'bar',
-        data: {
-            labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
-            datasets: [{
-                label: 'Stok Masuk',
-                data: [120, 150, 180, 200, 250, 280],
-                backgroundColor: 'rgba(16, 185, 129, 0.8)',
-                borderColor: '#10B981',
-                borderWidth: 1
-            }, {
-                label: 'Stok Keluar',
-                data: [100, 130, 160, 180, 220, 260],
-                backgroundColor: 'rgba(220, 38, 38, 0.8)',
-                borderColor: '#DC2626',
-                borderWidth: 1
-            }]
-        },
-        options: {}
-    });
+    new AnalyticsManager();
 }
 
 function initializeInventory() {
@@ -1617,6 +1530,7 @@ class ProductManager {
         this.productForm = document.getElementById('productForm');
         this.allProducts = [];
         this.deleteTargetId = null;
+        this.editTargetId = null;
         this.init();
     }
 
@@ -1631,6 +1545,7 @@ class ProductManager {
         const addBtn = document.getElementById('addProductBtn');
         if (addBtn) {
             addBtn.addEventListener('click', () => {
+                this.editTargetId = null;
                 this.productForm.reset();
                 const title = document.getElementById('modalTitle');
                 if (title) title.textContent = 'Tambah Produk';
@@ -1641,6 +1556,7 @@ class ProductManager {
         const cancelBtn = document.getElementById('cancelBtn');
         if (cancelBtn) {
             cancelBtn.addEventListener('click', () => {
+                this.editTargetId = null;
                 ModalManager.close('productModal');
             });
         }
@@ -1761,6 +1677,29 @@ class ProductManager {
                 ModalManager.open('deleteModal');
             });
         });
+
+        this.tableBody.querySelectorAll('.edit-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.openEditModal(btn.dataset.id);
+            });
+        });
+    }
+
+    openEditModal(id) {
+        const product = this.allProducts.find(p => p.id == id);
+        if (!product) return;
+
+        this.editTargetId = id;
+        const title = document.getElementById('modalTitle');
+        if (title) title.textContent = 'Edit Produk';
+
+        document.getElementById('productName').value = product.name;
+        document.getElementById('productSKU').value = product.sku;
+        document.getElementById('productCategory').value = product.category;
+        document.getElementById('productPrice').value = product.price;
+        document.getElementById('productStock').value = product.stock;
+
+        ModalManager.open('productModal');
     }
 
     async confirmDelete() {
@@ -1793,20 +1732,25 @@ class ProductManager {
         };
 
         try {
-            const response = await fetch('/api/products', {
-                method: 'POST',
+            const isEdit = !!this.editTargetId;
+            const url = isEdit ? `/api/products/${this.editTargetId}` : '/api/products';
+            const method = isEdit ? 'PUT' : 'POST';
+
+            const response = await fetch(url, {
+                method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
             const result = await response.json();
 
             if (result.success) {
-                Utils.showToast('Produk berhasil ditambahkan', 'success');
+                Utils.showToast(isEdit ? 'Produk berhasil diperbarui' : 'Produk berhasil ditambahkan', 'success');
                 ModalManager.close('productModal');
                 this.productForm.reset();
+                this.editTargetId = null;
                 this.loadProducts();
             } else {
-                Utils.showToast(result.message || 'Gagal menambahkan', 'error');
+                Utils.showToast(result.message || 'Gagal menyimpan', 'error');
             }
         } catch (error) {
             Utils.showToast('Terjadi kesalahan', 'error');
@@ -2211,6 +2155,188 @@ class StockManager {
         if (prevBtn) prevBtn.disabled = this.currentPage <= 1;
         if (nextBtn) nextBtn.disabled = this.currentPage >= totalPages;
         if (pageInfo) pageInfo.textContent = `Halaman ${this.currentPage} dari ${totalPages}`;
+    }
+}
+
+class AnalyticsManager {
+    constructor() {
+        this.init();
+    }
+
+    async init() {
+        try {
+            const response = await fetch('/api/analytics');
+            const result = await response.json();
+            if (result.success) {
+                this.populate(result.data);
+            }
+        } catch (error) {
+            console.warn('Analytics data could not be loaded');
+        }
+    }
+
+    formatCurrencyShort(value) {
+        if (value >= 1000000000) return 'Rp ' + (value / 1000000000).toFixed(1) + 'B';
+        if (value >= 1000000) return 'Rp ' + (value / 1000000).toFixed(1) + 'M';
+        if (value >= 1000) return 'Rp ' + (value / 1000).toFixed(0) + 'K';
+        return 'Rp ' + value.toLocaleString('id-ID');
+    }
+
+    populate(data) {
+        // Stat cards by ID
+        const el = (id) => document.getElementById(id);
+
+        const salesEl = el('analyticsStatSales');
+        if (salesEl) salesEl.textContent = data.totalSales.toLocaleString('id-ID');
+
+        const revEl = el('analyticsStatRevenue');
+        if (revEl) revEl.textContent = this.formatCurrencyShort(data.monthlyRevenue);
+
+        const soldEl = el('analyticsStatSold');
+        if (soldEl) soldEl.textContent = data.productsSold.toLocaleString('id-ID');
+
+        const growthEl = el('analyticsStatGrowth');
+        if (growthEl) growthEl.textContent = data.growth + '%';
+
+        // Performance summary
+        const avgEl = el('analyticsAvgPerDay');
+        if (avgEl) avgEl.textContent = data.avgPerDay;
+
+        this.renderSalesChart(data.salesLabels, data.salesData);
+        this.renderCategoryChart(data.categoryLabels, data.categoryData);
+        this.renderStockFlowChart(data.stockFlowLabels, data.stockFlowIn, data.stockFlowOut);
+        this.renderTopProducts(data.topProducts);
+    }
+
+    renderSalesChart(labels, salesData) {
+        const canvas = document.getElementById('salesChart');
+        if (!canvas || typeof Chart === 'undefined') return;
+
+        const existing = Chart.getChart(canvas);
+        if (existing) existing.destroy();
+
+        new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Penjualan',
+                    data: salesData,
+                    borderColor: '#10B981',
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    tension: 0.4,
+                    fill: true,
+                    pointBackgroundColor: '#10B981',
+                    pointBorderColor: '#FFFFFF',
+                    pointBorderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#94a3b8' } }
+                },
+                scales: {
+                    x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.1)' } },
+                    y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.1)' } }
+                }
+            }
+        });
+    }
+
+    renderCategoryChart(labels, categoryData) {
+        const canvas = document.getElementById('categoryChart');
+        if (!canvas || typeof Chart === 'undefined') return;
+
+        const existing = Chart.getChart(canvas);
+        if (existing) existing.destroy();
+
+        const colors = ['#10B981', '#3B82F6', '#F59E0B', '#8B5CF6', '#EF4444', '#06B6D4', '#F97316'];
+
+        new Chart(canvas, {
+            type: 'doughnut',
+            data: {
+                labels,
+                datasets: [{
+                    data: categoryData,
+                    backgroundColor: colors.slice(0, labels.length),
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '60%',
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: { color: '#94a3b8', padding: 16, font: { size: 11 } }
+                    }
+                }
+            }
+        });
+    }
+
+    renderStockFlowChart(labels, dataIn, dataOut) {
+        const canvas = document.getElementById('stockFlowChart');
+        if (!canvas || typeof Chart === 'undefined') return;
+
+        const existing = Chart.getChart(canvas);
+        if (existing) existing.destroy();
+
+        new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Stok Masuk',
+                    data: dataIn,
+                    backgroundColor: 'rgba(16, 185, 129, 0.8)',
+                    borderColor: '#10B981',
+                    borderWidth: 1
+                }, {
+                    label: 'Stok Keluar',
+                    data: dataOut,
+                    backgroundColor: 'rgba(220, 38, 38, 0.8)',
+                    borderColor: '#DC2626',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#94a3b8' } }
+                },
+                scales: {
+                    x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.1)' } },
+                    y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.1)' } }
+                }
+            }
+        });
+    }
+
+    renderTopProducts(products) {
+        const tbody = document.querySelector('.analytics-table tbody');
+        if (!tbody || !products || products.length === 0) return;
+
+        tbody.innerHTML = products.map(p => {
+            const revFormatted = this.formatCurrencyShort(p.revenue);
+            return `
+                <tr>
+                    <td>
+                        <div class="product-info">
+                            <div class="product-name">${p.name}</div>
+                            <div class="product-desc">${p.description || ''}</div>
+                        </div>
+                    </td>
+                    <td style="text-transform: capitalize;">${p.category}</td>
+                    <td class="text-center">${p.sold.toLocaleString('id-ID')}</td>
+                    <td class="text-center">${revFormatted}</td>
+                </tr>
+            `;
+        }).join('');
     }
 }
 

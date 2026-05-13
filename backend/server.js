@@ -102,6 +102,41 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        if (req.url.startsWith('/api/products/') && req.method === 'PUT') {
+            const id = req.url.split('/').pop();
+            let body = '';
+            req.on('data', chunk => body += chunk.toString());
+            req.on('end', async () => {
+                try {
+                    const data = JSON.parse(body);
+                    const { name, sku, category, price, stock, description } = data;
+
+                    if (!name || !sku || !category || !price || stock === undefined) {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ success: false, message: 'Harap lengkapi semua field wajib' }));
+                        return;
+                    }
+
+                    let status = 'aman';
+                    if (stock <= 5) status = 'kritis';
+                    else if (stock <= 15) status = 'menipis';
+
+                    await db.execute(
+                        'UPDATE products SET name = ?, sku = ?, category = ?, price = ?, stock = ?, description = ?, status = ? WHERE id = ?',
+                        [name, sku, category, price, stock, description || '', status, id]
+                    );
+
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, message: 'Produk berhasil diperbarui' }));
+                } catch (error) {
+                    console.error('API Error:', error);
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: false, message: 'Terjadi kesalahan server', detail: error.message }));
+                }
+            });
+            return;
+        }
+
         if (req.url.startsWith('/api/products/') && req.method === 'DELETE') {
             const id = req.url.split('/').pop();
             try {
@@ -110,6 +145,126 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify({ success: true, message: 'Produk berhasil dihapus' }));
             } catch (error) {
                 console.error('API Error:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, message: 'Terjadi kesalahan server' }));
+            }
+            return;
+        }
+
+        if (req.url === '/api/analytics' && req.method === 'GET') {
+            try {
+                // Total penjualan (total quantity keluar)
+                const [totalSalesRows] = await db.execute("SELECT COALESCE(SUM(quantity),0) as total FROM transactions WHERE type = 'out'");
+                const totalSales = parseInt(totalSalesRows[0].total);
+
+                // Pendapatan bulanan (bulan ini)
+                const now = new Date();
+                const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+                const [monthlyRevRows] = await db.execute(
+                    "SELECT COALESCE(SUM(total_price),0) as total FROM transactions WHERE type = 'out' AND date >= ?", [monthStart]
+                );
+                const monthlyRevenue = parseFloat(monthlyRevRows[0].total);
+
+                // Produk terjual (jumlah transaksi keluar unik)
+                const [soldCountRows] = await db.execute("SELECT COALESCE(SUM(quantity),0) as total FROM transactions WHERE type = 'out'");
+                const productsSold = parseInt(soldCountRows[0].total);
+
+                // Pertumbuhan: bandingkan bulan ini vs bulan lalu
+                const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
+                const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
+                const [lastMonthRows] = await db.execute(
+                    "SELECT COALESCE(SUM(total_price),0) as total FROM transactions WHERE type = 'out' AND date >= ? AND date <= ?",
+                    [lastMonthStart, lastMonthEnd]
+                );
+                const lastMonthRev = parseFloat(lastMonthRows[0].total) || 1;
+                const growth = Math.round(((monthlyRevenue - lastMonthRev) / lastMonthRev) * 100);
+
+                // Grafik penjualan 6 bulan terakhir (per bulan)
+                const salesLabels = [];
+                const salesData = [];
+                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                for (let i = 5; i >= 0; i--) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    const mStart = d.toISOString().slice(0, 10);
+                    const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+                    salesLabels.push(monthNames[d.getMonth()]);
+                    const [r] = await db.execute(
+                        "SELECT COALESCE(SUM(quantity),0) as total FROM transactions WHERE type='out' AND date >= ? AND date <= ?",
+                        [mStart, mEnd]
+                    );
+                    salesData.push(parseInt(r[0].total));
+                }
+
+                // Kategori terlaris
+                const [categoryRows] = await db.execute(
+                    `SELECT p.category, COALESCE(SUM(t.quantity),0) as total
+                     FROM transactions t JOIN products p ON t.product_id = p.id
+                     WHERE t.type = 'out'
+                     GROUP BY p.category ORDER BY total DESC`
+                );
+                const categoryLabels = categoryRows.map(r => r.category.charAt(0).toUpperCase() + r.category.slice(1));
+                const categoryData = categoryRows.map(r => parseInt(r.total));
+
+                // Stock flow 6 bulan
+                const stockFlowLabels = [];
+                const stockFlowIn = [];
+                const stockFlowOut = [];
+                for (let i = 5; i >= 0; i--) {
+                    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                    const mStart = d.toISOString().slice(0, 10);
+                    const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+                    stockFlowLabels.push(monthNames[d.getMonth()]);
+                    const [inR] = await db.execute("SELECT COALESCE(SUM(quantity),0) as total FROM transactions WHERE type='in' AND date >= ? AND date <= ?", [mStart, mEnd]);
+                    const [outR] = await db.execute("SELECT COALESCE(SUM(quantity),0) as total FROM transactions WHERE type='out' AND date >= ? AND date <= ?", [mStart, mEnd]);
+                    stockFlowIn.push(parseInt(inR[0].total));
+                    stockFlowOut.push(parseInt(outR[0].total));
+                }
+
+                // Performa
+                const [avgTxRows] = await db.execute("SELECT COUNT(*) as total FROM transactions");
+                const totalTx = parseInt(avgTxRows[0].total);
+                const [oldestRow] = await db.execute("SELECT MIN(date) as oldest FROM transactions");
+                let avgPerDay = 0;
+                if (oldestRow[0].oldest) {
+                    const daysDiff = Math.max(1, Math.ceil((now - new Date(oldestRow[0].oldest)) / (1000 * 60 * 60 * 24)));
+                    avgPerDay = Math.round(totalTx / daysDiff);
+                }
+
+                // Top selling products
+                const [topProducts] = await db.execute(
+                    `SELECT p.name, p.description, p.category, SUM(t.quantity) as sold, SUM(t.total_price) as revenue
+                     FROM transactions t JOIN products p ON t.product_id = p.id
+                     WHERE t.type = 'out'
+                     GROUP BY t.product_id ORDER BY sold DESC LIMIT 5`
+                );
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    success: true,
+                    data: {
+                        totalSales,
+                        monthlyRevenue,
+                        productsSold,
+                        growth,
+                        salesLabels,
+                        salesData,
+                        categoryLabels,
+                        categoryData,
+                        stockFlowLabels,
+                        stockFlowIn,
+                        stockFlowOut,
+                        avgPerDay,
+                        topProducts: topProducts.map(p => ({
+                            name: p.name,
+                            description: p.description,
+                            category: p.category,
+                            sold: parseInt(p.sold),
+                            revenue: parseFloat(p.revenue)
+                        }))
+                    }
+                }));
+            } catch (error) {
+                console.error('Analytics Error:', error);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: false, message: 'Terjadi kesalahan server' }));
             }
